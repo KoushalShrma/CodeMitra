@@ -137,6 +137,11 @@ public class ClerkAuthenticationFilter extends OncePerRequestFilter {
     }
     
     private Map<String, Object> decodeJwt(String token) {
+        // NOTE: This is a simplified JWT decode for development purposes.
+        // In production, implement proper JWT signature validation using JWKS:
+        // 1. Fetch JWKS from Clerk's /.well-known/jwks.json endpoint
+        // 2. Use a library like java-jwt or jjwt to validate the signature
+        // 3. Verify issuer, audience, and expiration claims
         try {
             String[] parts = token.split("\\.");
             if (parts.length != 3) {
