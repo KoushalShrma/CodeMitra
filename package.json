@@ -1,0 +1,46 @@
+{
+  "name": "codemitra",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint src --ext .js,.jsx --report-unused-disable-directives",
+    "lint:fix": "eslint src --ext .js,.jsx --fix",
+    "format": "prettier --write src/**/*.{js,jsx,css}",
+    "lint:css": "stylelint src/**/*.css"
+  },
+  "dependencies": {
+    "@clerk/clerk-react": "^5.61.4",
+    "@monaco-editor/react": "^4.7.0",
+    "@tanstack/react-query": "^5.99.0",
+    "framer-motion": "^12.38.0",
+    "lucide-react": "^1.8.0",
+    "prop-types": "^15.8.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0",
+    "recharts": "^2.15.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "^8.57.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "@welldone-software/why-did-you-render": "^8.0.3",
+    "autoprefixer": "^10.4.20",
+    "eslint": "^8.57.1",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-jsx-a11y": "^6.10.2",
+    "eslint-plugin-prettier": "^5.5.5",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "postcss": "^8.4.49",
+    "prettier": "^3.8.2",
+    "stylelint": "^17.6.0",
+    "stylelint-config-standard": "^40.0.0",
+    "tailwindcss": "^3.4.15",
+    "vite": "^5.4.10",
+    "vite-plugin-eslint": "^1.8.1"
+  }
+}
