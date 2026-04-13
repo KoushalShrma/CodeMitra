@@ -9,4 +9,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
  */
 public interface TestQuestionRepository extends JpaRepository<TestQuestionEntity, Long> {
     List<TestQuestionEntity> findByTestIdOrderByIdAsc(Long testId);
+
+    boolean existsByTestId(Long testId);
+
+    void deleteByTestId(Long testId);
 }

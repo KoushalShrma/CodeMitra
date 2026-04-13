@@ -554,10 +554,10 @@ export async function joinInstitutionTest(testId, userId) {
   });
 }
 
-export async function submitInstitutionTest(testId, attemptId) {
+export async function submitInstitutionTest(testId, attemptId, submitMode = 'manual') {
   return request(`/api/test/${testId}/submit`, {
     method: 'POST',
-    body: JSON.stringify({ attemptId }),
+    body: JSON.stringify({ attemptId, submitMode }),
   });
 }
 
@@ -584,7 +584,7 @@ export async function startStudentTestAttempt(data) {
 }
 
 export async function joinStudentTestByCode(data) {
-  return request('/api/student-tests/join-by-code', {
+  return request('/api/tests/join-by-code', {
     method: 'POST',
     body: JSON.stringify(data),
   });

@@ -9,6 +9,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
  * Repository for institution membership and role mapping rows.
  */
 public interface InstitutionUserRepository extends JpaRepository<InstitutionUserEntity, Long> {
+    boolean existsByUserIdAndInstitutionId(Long userId, Long institutionId);
+
     Optional<InstitutionUserEntity> findByUserIdAndInstitutionId(Long userId, Long institutionId);
 
     Optional<InstitutionUserEntity> findByIdAndInstitutionId(Long id, Long institutionId);

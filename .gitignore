@@ -4,10 +4,9 @@
 .env.production
 .env.development
 .env.*
-!.env.example
+!/.env.example
 backend/.env
 backend/.env.*
-!backend/.env.example
 
 # Spring Boot secrets
 backend/src/main/resources/application-secrets.properties

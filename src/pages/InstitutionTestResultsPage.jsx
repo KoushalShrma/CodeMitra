@@ -45,6 +45,7 @@ function InstitutionTestResultsPage() {
         : '';
 
   const rows = useMemo(() => payload?.rows || [], [payload]);
+  const attemptDetails = useMemo(() => payload?.attemptDetails || [], [payload]);
   const stats = useMemo(() => {
     const scores = rows.map((row) => Number(row.score || 0));
     if (!scores.length) {
@@ -171,6 +172,102 @@ function InstitutionTestResultsPage() {
           ))
         )}
       </section>
+
+      {attemptDetails.length ? (
+        <section
+          className="surface-card"
+          style={{ padding: 'var(--space-4)', display: 'grid', gap: 'var(--space-3)' }}
+        >
+          <p className="label-text">Detailed Submissions & Reports</p>
+          {attemptDetails.map((detail) => (
+            <article
+              key={detail.attemptId}
+              className="surface-elevated"
+              style={{ padding: 'var(--space-3)', display: 'grid', gap: 'var(--space-2)' }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: 'var(--space-2)',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <p style={{ color: 'var(--color-text-primary)', fontWeight: 700 }}>
+                  #{detail.rank} {detail.candidateName}
+                </p>
+                <p style={{ color: 'var(--color-text-secondary)', fontSize: 'var(--text-sm)' }}>
+                  Attempt {detail.attemptId} | Status {detail.status} | Submitted{' '}
+                  {detail.submittedAt ? new Date(detail.submittedAt).toLocaleString() : '-'}
+                </p>
+              </div>
+
+              {detail.report ? (
+                <div style={{ display: 'grid', gap: 'var(--space-2)' }}>
+                  <p style={{ color: 'var(--color-text-secondary)', fontSize: 'var(--text-sm)' }}>
+                    Score {detail.report.score} | Accuracy {detail.report.accuracy}% | Solved{' '}
+                    {detail.report.solved}/{detail.report.totalQuestions} | Time {detail.report.timeTaken}s
+                  </p>
+                  <p style={{ color: 'var(--color-text-muted)', fontSize: 'var(--text-xs)' }}>
+                    Great {detail.report.greatMoves} | Mistakes {detail.report.mistakes} | Blunders{' '}
+                    {detail.report.blunders} | Tab switches {detail.tabSwitchCount} | Flags{' '}
+                    {detail.antiCheatFlags}
+                  </p>
+                  <p style={{ color: 'var(--color-text-muted)', fontSize: 'var(--text-xs)' }}>
+                    Weak topics:{' '}
+                    {(detail.report.weakTopics || []).length
+                      ? detail.report.weakTopics.join(', ')
+                      : 'None'}{' '}
+                    | Strong topics:{' '}
+                    {(detail.report.strongTopics || []).length
+                      ? detail.report.strongTopics.join(', ')
+                      : 'None'}
+                  </p>
+                </div>
+              ) : null}
+
+              {(detail.submissions || []).length ? (
+                <div style={{ display: 'grid', gap: 'var(--space-2)' }}>
+                  {(detail.submissions || []).map((submission, index) => (
+                    <div
+                      key={`${detail.attemptId}-${submission.questionId}-${index}`}
+                      className="surface-card"
+                      style={{ padding: 'var(--space-2)', display: 'grid', gap: 'var(--space-1)' }}
+                    >
+                      <p style={{ color: 'var(--color-text-primary)', fontSize: 'var(--text-sm)' }}>
+                        Q{index + 1} | Problem {submission.problemId || submission.questionId} |{' '}
+                        {submission.language} | {submission.passed}/{submission.total} | {submission.status}
+                      </p>
+                      <p style={{ color: 'var(--color-text-muted)', fontSize: 'var(--text-xs)' }}>
+                        Topic {submission.topic || '-'} | Pattern {submission.pattern || '-'} | Updated{' '}
+                        {submission.updatedAt ? new Date(submission.updatedAt).toLocaleString() : '-'}
+                      </p>
+                      <pre
+                        className="mono-panel"
+                        style={{
+                          margin: 0,
+                          padding: 'var(--space-2)',
+                          maxHeight: 180,
+                          overflow: 'auto',
+                          color: 'var(--color-text-secondary)',
+                          whiteSpace: 'pre-wrap',
+                        }}
+                      >
+                        {submission.code || 'No code submitted.'}
+                      </pre>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p style={{ color: 'var(--color-text-secondary)', fontSize: 'var(--text-sm)' }}>
+                  No saved submissions found for this attempt.
+                </p>
+              )}
+            </article>
+          ))}
+        </section>
+      ) : null}
 
       {(payload?.plagiarismFlags || []).length ? (
         <section

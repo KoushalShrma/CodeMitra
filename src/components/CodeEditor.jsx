@@ -15,6 +15,7 @@ function CodeEditor({
   largePasteThreshold = 120,
 }) {
   const pasteDisposableRef = useRef(null);
+  const editorRef = useRef(null);
 
   useEffect(() => {
     return () => {
@@ -22,7 +23,19 @@ function CodeEditor({
     };
   }, []);
 
+  useEffect(() => {
+    const handleResize = () => {
+      editorRef.current?.layout();
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+    };
+  }, []);
+
   const handleEditorMount = (editorInstance) => {
+    editorRef.current = editorInstance;
     pasteDisposableRef.current?.dispose();
 
     pasteDisposableRef.current = editorInstance.onDidPaste((event) => {
@@ -35,10 +48,13 @@ function CodeEditor({
         });
       }
     });
+
+    window.requestAnimationFrame(() => editorInstance.layout());
+    window.setTimeout(() => editorInstance.layout(), 100);
   };
 
   return (
-    <section className="editor-shell card-surface flex h-full min-h-[360px] flex-col overflow-hidden">
+    <section className="editor-shell card-surface flex h-[460px] min-h-[420px] sm:h-[520px] flex-col overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-brand-border/70 px-4 py-3 sm:px-5">
         <div className="flex items-center gap-2">
           <label htmlFor="language" className="text-sm font-medium text-brand-muted">
@@ -85,7 +101,7 @@ function CodeEditor({
         <span>UTF-8 | Spaces: 2 | Ln 1, Col 1</span>
       </div>
 
-      <div className="flex-1 overflow-hidden rounded-b-2xl">
+      <div className="h-full flex-1 overflow-hidden rounded-b-2xl">
         <Editor
           height="100%"
           language={language === 'C++' ? 'cpp' : language.toLowerCase()}
@@ -103,6 +119,7 @@ function CodeEditor({
             cursorBlinking: 'smooth',
             scrollBeyondLastLine: false,
             roundedSelection: true,
+            automaticLayout: true,
           }}
         />
       </div>

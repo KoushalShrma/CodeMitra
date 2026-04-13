@@ -39,7 +39,8 @@ public final class InstitutionDtos {
             String joinCode,
             String accessScope,
             Boolean published,
-            List<TestProblemItem> problems
+            List<TestProblemItem> problems,
+            List<TestQuestionItem> questions
     ) {
     }
 
@@ -99,6 +100,28 @@ public final class InstitutionDtos {
     }
 
     /**
+     * Nested test question payload for institution test create/update.
+     */
+    public record TestQuestionItem(
+            String problemId,
+            String customQuestion,
+            String difficulty,
+            String topic,
+            String pattern,
+            List<TestQuestionTestCaseItem> testCases
+    ) {
+    }
+
+    /**
+     * Nested test case payload for institution test questions.
+     */
+    public record TestQuestionTestCaseItem(
+            String input,
+            String expectedOutput
+    ) {
+    }
+
+    /**
      * Payload for custom problem creation.
      */
     public record CreateCustomProblemRequest(
@@ -136,7 +159,8 @@ public final class InstitutionDtos {
      * Payload for submitting complete attempt.
      */
     public record SubmitTestRequest(
-            Long attemptId
+            Long attemptId,
+            String submitMode
     ) {
     }
 
