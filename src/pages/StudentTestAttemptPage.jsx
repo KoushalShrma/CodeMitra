@@ -36,10 +36,14 @@ function getAttemptIdFromSearch(search) {
 }
 
 function formatCountdown(totalSeconds) {
-  const minutes = Math.floor(totalSeconds / 60)
+  const safeSeconds = Number.isFinite(totalSeconds)
+    ? Math.max(0, Math.floor(totalSeconds))
+    : 0;
+
+  const minutes = Math.floor(safeSeconds / 60)
     .toString()
     .padStart(2, '0');
-  const seconds = Math.floor(totalSeconds % 60)
+  const seconds = Math.floor(safeSeconds % 60)
     .toString()
     .padStart(2, '0');
   return `${minutes}:${seconds}`;
@@ -88,6 +92,8 @@ function StudentTestAttemptPage() {
   const isInstitutionRoute = location.pathname.startsWith('/institution/');
   const autoSubmitRef = useRef(false);
   const fullscreenArmedRef = useRef(false);
+  const fullscreenExitCountRef = useRef(0);
+  const timerInitializedRef = useRef(false);
 
   const [attempt, setAttempt] = useState(null);
   const [questions, setQuestions] = useState([]);
@@ -99,12 +105,31 @@ function StudentTestAttemptPage() {
   const [antiCheatFlags, setAntiCheatFlags] = useState(0);
   const [result, setResult] = useState(null);
   const [report, setReport] = useState(null);
+  const [submissionNotice, setSubmissionNotice] = useState('');
   const [isRunning, setIsRunning] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isFullscreenRequired, setIsFullscreenRequired] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
   const activeQuestion = questions[activeQuestionIndex] || null;
-  const activeAnswer = activeQuestion ? answers[activeQuestion.id] : null;
+  const activeAnswer = useMemo(() => {
+    if (!activeQuestion) {
+      return null;
+    }
+
+    const existing = answers[activeQuestion.id];
+    if (existing) {
+      return existing;
+    }
+
+    const fallbackLanguage = 'JavaScript';
+    return {
+      language: fallbackLanguage,
+      code: activeQuestion.problemId
+        ? getPracticeStarterCode(activeQuestion.problemId, fallbackLanguage)
+        : getCustomStarterCode(fallbackLanguage),
+    };
+  }, [activeQuestion, answers]);
 
   const {
     data: attemptPayload,
@@ -124,13 +149,14 @@ function StudentTestAttemptPage() {
   const { data: reportPayload, error: reportError } = useQuery({
     queryKey: queryKeys.studentAttemptReport(attemptId),
     queryFn: () => getStudentAttemptReport(attemptId),
-    enabled: Boolean(attemptId && result && !report),
+    enabled: Boolean(attemptId && !report && (result || attempt?.status === 'completed')),
     staleTime: QUERY_STALE_TIMES.interactive,
   });
 
   const queryErrorMessage = attemptError instanceof Error ? attemptError.message : '';
   const combinedErrorMessage = errorMessage || queryErrorMessage;
   const isLoading = isAttemptLoading && !attempt;
+  const isAttemptLocked = Boolean(attempt && attempt.status && attempt.status !== 'ongoing');
 
   const trackAntiCheatEvent = async (eventType, eventPayload = {}) => {
     if (testId) {
@@ -142,7 +168,7 @@ function StudentTestAttemptPage() {
       return;
     }
 
-    await trackStudentAntiCheat({ attemptId, type: eventType });
+    await trackStudentAntiCheat({ attemptId, type: eventType, eventPayload });
   };
 
   useEffect(() => {
@@ -150,7 +176,6 @@ function StudentTestAttemptPage() {
       navigate('/student-tests');
     }
   }, [attemptId, isInstitutionRoute, navigate, testId]);
-
   useEffect(() => {
     const nextAttempt = attemptPayload?.attempt;
     if (!nextAttempt) {
@@ -182,34 +207,80 @@ function StudentTestAttemptPage() {
     setActiveQuestionIndex(0);
     setTabSwitchCount(nextAttempt.tabSwitchCount || 0);
     setAntiCheatFlags(nextAttempt.antiCheatFlags || 0);
+    timerInitializedRef.current = false;
     setErrorMessage('');
+    if (nextAttempt.status === 'ongoing') {
+      setSubmissionNotice('');
+    }
   }, [attemptPayload, attempt?.id, questions.length]);
 
   useEffect(() => {
-    if (!attempt?.endTime || result) {
+    timerInitializedRef.current = false;
+
+    if (!attempt?.endTime || result || isSubmitting || isAttemptLocked) {
+      setTimeLeft(0);
       return undefined;
     }
 
+    const parsedRemainingSeconds = Number(attempt.remainingSeconds);
+    if (Number.isFinite(parsedRemainingSeconds) && parsedRemainingSeconds >= 0) {
+      const initialSeconds = Math.max(0, Math.ceil(parsedRemainingSeconds));
+      const startedAtMs = Date.now();
+
+      setTimeLeft(initialSeconds);
+      timerInitializedRef.current = true;
+
+      const interval = window.setInterval(() => {
+        const elapsedSeconds = Math.floor((Date.now() - startedAtMs) / 1000);
+        const nextSeconds = Math.max(0, initialSeconds - elapsedSeconds);
+        setTimeLeft(nextSeconds);
+      }, 1000);
+
+      return () => window.clearInterval(interval);
+    }
+
     const tick = () => {
-      const seconds = Math.max(
-        0,
-        Math.floor((new Date(attempt.endTime).getTime() - Date.now()) / 1000)
-      );
+      const endTimeMs = new Date(attempt.endTime).getTime();
+      if (!Number.isFinite(endTimeMs)) {
+        setTimeLeft(0);
+        timerInitializedRef.current = false;
+        setErrorMessage('Unable to read test timer. Please reload this attempt.');
+        return;
+      }
+
+      const seconds = Math.max(0, Math.ceil((endTimeMs - Date.now()) / 1000));
       setTimeLeft(seconds);
+      timerInitializedRef.current = true;
     };
 
     tick();
     const interval = window.setInterval(tick, 1000);
     return () => window.clearInterval(interval);
-  }, [attempt, result]);
+  }, [attempt?.id, attempt?.endTime, isAttemptLocked, isSubmitting, result]);
 
   useEffect(() => {
-    if (timeLeft === 0 && attempt && !result && !isLoading && !autoSubmitRef.current) {
-      autoSubmitRef.current = true;
-      void handleSubmitTest(true);
+    if (!attempt || result || isLoading || isSubmitting || isAttemptLocked || autoSubmitRef.current) {
+      return;
     }
+
+    if (!timerInitializedRef.current || timeLeft > 0) {
+      return;
+    }
+
+    autoSubmitRef.current = true;
+    void handleSubmitTest(true, 'time_up');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timeLeft, attempt, result, isLoading]);
+  }, [timeLeft, attempt, isAttemptLocked, isLoading, isSubmitting, result]);
+
+  useEffect(() => {
+    if (!attempt || result || isSubmitting || isAttemptLocked) {
+      return;
+    }
+
+    if (timeLeft > 0) {
+      autoSubmitRef.current = false;
+    }
+  }, [attempt, isAttemptLocked, isSubmitting, result, timeLeft]);
 
   useEffect(() => {
     if (!reportPayload) {
@@ -217,6 +288,20 @@ function StudentTestAttemptPage() {
     }
 
     setReport(reportPayload);
+
+    if (!result && attempt?.status === 'completed') {
+      setResult({
+        totalQuestions: reportPayload.totalQuestions || 0,
+        solved: reportPayload.solved || 0,
+        accuracy: reportPayload.accuracy || 0,
+        score: reportPayload.score || 0,
+        status:
+          reportPayload.solved === reportPayload.totalQuestions && reportPayload.totalQuestions > 0
+            ? 'pass'
+            : 'fail',
+      });
+      setSubmissionNotice((current) => current || 'This test is already submitted.');
+    }
   }, [reportPayload]);
 
   useEffect(() => {
@@ -276,61 +361,78 @@ function StudentTestAttemptPage() {
 
   useEffect(() => {
     if (!attempt?.antiCheatingEnabled || result) {
+      setIsFullscreenRequired(false);
+      fullscreenArmedRef.current = false;
+      fullscreenExitCountRef.current = 0;
       return undefined;
     }
 
-    const enterFullscreen = async () => {
-      if (document.fullscreenElement) {
-        fullscreenArmedRef.current = true;
-        return;
-      }
-
-      const root = document.documentElement;
-      if (!root.requestFullscreen) {
-        return;
-      }
-
-      try {
-        await root.requestFullscreen();
-        fullscreenArmedRef.current = true;
-      } catch {
-        setErrorMessage('Unable to enable fullscreen automatically. Please allow fullscreen for the test.');
-      }
-    };
+    setIsFullscreenRequired(!Boolean(document.fullscreenElement));
+    if (document.fullscreenElement) {
+      fullscreenArmedRef.current = true;
+    }
 
     const handleFullscreenChange = async () => {
       if (document.fullscreenElement) {
         fullscreenArmedRef.current = true;
+        setIsFullscreenRequired(false);
+        setErrorMessage('');
         return;
       }
+
+      setIsFullscreenRequired(true);
 
       if (!fullscreenArmedRef.current || autoSubmitRef.current || isSubmitting) {
         return;
       }
 
+      fullscreenExitCountRef.current += 1;
       setAntiCheatFlags((current) => current + 1);
-      setErrorMessage('Fullscreen exited. Test has been auto-submitted.');
 
       try {
         await trackAntiCheatEvent('fullscreen_exit', {
           source: 'fullscreenchange',
           exitedAt: new Date().toISOString(),
+          exitCount: fullscreenExitCountRef.current,
         });
       } catch (error) {
         console.error('Failed to track fullscreen exit:', error.message);
       }
 
+      if (fullscreenExitCountRef.current === 1) {
+        setErrorMessage('Fullscreen exited once. Return to fullscreen now. Next exit will auto-submit your test.');
+        return;
+      }
+
+      setErrorMessage('Fullscreen exited again. Test has been auto-submitted.');
       autoSubmitRef.current = true;
-      void handleSubmitTest(true);
+      void handleSubmitTest(true, 'fullscreen_exit');
     };
 
-    void enterFullscreen();
     document.addEventListener('fullscreenchange', handleFullscreenChange);
 
     return () => {
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
     };
   }, [attempt, isSubmitting, result, testId]);
+
+  const handleEnterFullscreen = async () => {
+    const root = document.documentElement;
+
+    if (!root.requestFullscreen) {
+      setErrorMessage('Fullscreen is not supported in this browser.');
+      return;
+    }
+
+    try {
+      await root.requestFullscreen();
+      fullscreenArmedRef.current = true;
+      setIsFullscreenRequired(false);
+      setErrorMessage('');
+    } catch {
+      setErrorMessage('Fullscreen is required for this test. Please allow fullscreen and try again.');
+    }
+  };
 
   const updateActiveAnswer = (nextValue) => {
     if (!activeQuestion) {
@@ -393,6 +495,16 @@ function StudentTestAttemptPage() {
 
   const handleRunCode = async () => {
     if (!activeQuestion || !activeAnswer) {
+      return;
+    }
+
+    if (isAttemptLocked) {
+      setErrorMessage('This attempt is already submitted.');
+      return;
+    }
+
+    if (attempt?.antiCheatingEnabled && isFullscreenRequired) {
+      setErrorMessage('Enter fullscreen to continue this test.');
       return;
     }
 
@@ -482,8 +594,18 @@ function StudentTestAttemptPage() {
     }
   };
 
-  const handleSubmitTest = async (isAutoSubmit = false) => {
+  const handleSubmitTest = async (isAutoSubmit = false, autoReason = 'manual') => {
     if (!attemptId || isSubmitting) {
+      return;
+    }
+
+    if (isAttemptLocked) {
+      setErrorMessage('This attempt is already submitted.');
+      return;
+    }
+
+    if (!isAutoSubmit && attempt?.antiCheatingEnabled && isFullscreenRequired) {
+      setErrorMessage('Enter fullscreen before submitting this test.');
       return;
     }
 
@@ -504,12 +626,28 @@ function StudentTestAttemptPage() {
         )
       );
 
+      const submitMode = isAutoSubmit ? autoReason : 'manual';
       const response = isInstitutionRoute
-        ? await submitInstitutionTest(testId, attemptId)
-        : await submitStudentTestAttempt({ attemptId });
+        ? await submitInstitutionTest(testId, attemptId, submitMode)
+        : await submitStudentTestAttempt({ attemptId, submitMode });
       setResult(response.result);
       setReport(response.report || null);
+
+      if (isAutoSubmit && autoReason === 'time_up') {
+        setSubmissionNotice("Time's up! Your test has been submitted.");
+      } else if (isAutoSubmit && autoReason === 'fullscreen_exit') {
+        setSubmissionNotice('Fullscreen exited. Your test has been submitted.');
+      } else {
+        setSubmissionNotice('');
+      }
     } catch (error) {
+      if (isAutoSubmit && error instanceof Error && error.status === 409) {
+        if (autoReason !== 'time_up') {
+          autoSubmitRef.current = false;
+        }
+        return;
+      }
+
       setErrorMessage(
         error instanceof Error
           ? error.message
@@ -539,6 +677,23 @@ function StudentTestAttemptPage() {
     );
   }
 
+  if (attempt && questions.length === 0) {
+    return (
+      <section className="card-surface p-6 text-sm text-brand-muted space-y-4">
+        <p className="status-error">
+          This test is not ready yet. No questions are assigned to it.
+        </p>
+        <button
+          type="button"
+          onClick={() => navigate('/student-tests')}
+          className="rounded-xl border border-brand-border bg-brand-elevated px-5 py-3 text-sm font-semibold text-brand-text transition hover:border-brand-secondary"
+        >
+          Back to Tests
+        </button>
+      </section>
+    );
+  }
+
   if (!attempt || !activeQuestion || !activeAnswer) {
     return (
       <section className="card-surface p-6 text-sm text-brand-muted">
@@ -551,6 +706,11 @@ function StudentTestAttemptPage() {
     return (
       <section className="space-y-8 fade-slide-in">
         <div className="card-surface p-7 sm:p-10">
+          {submissionNotice ? (
+            <p className="mb-4 rounded-xl border border-amber-400/40 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+              {submissionNotice}
+            </p>
+          ) : null}
           <p className="text-sm font-medium text-brand-accent">Test Submitted</p>
           <h1 className="mt-3 text-3xl font-bold tracking-tight sm:text-4xl">{attempt.title}</h1>
           <div className="mt-6 grid gap-4 sm:grid-cols-4">
@@ -681,7 +841,11 @@ function StudentTestAttemptPage() {
           <button
             type="button"
             onClick={() => handleSubmitTest(false)}
-            disabled={isSubmitting}
+            disabled={
+              isSubmitting
+              || isAttemptLocked
+              || (attempt.antiCheatingEnabled && isFullscreenRequired)
+            }
             className="rounded-xl bg-gradient-to-r from-brand-accent to-brand-accentSoft px-5 py-3 text-sm font-semibold text-slate-900 shadow-[0_8px_20px_rgba(34,198,163,0.35)] transition-all duration-200 hover:-translate-y-0.5 hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-70"
           >
             {isSubmitting ? 'Submitting...' : 'Submit Test'}
@@ -689,9 +853,28 @@ function StudentTestAttemptPage() {
         </div>
       </div>
 
+      {submissionNotice ? (
+        <p className="rounded-xl border border-amber-400/40 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+          {submissionNotice}
+        </p>
+      ) : null}
+
       {attempt.antiCheatingEnabled ? (
-        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-          Anti-cheating is enabled. Fullscreen is mandatory, and exiting fullscreen will auto-submit your test.
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200 space-y-3">
+          <p>
+            Anti-cheating is enabled. Fullscreen is mandatory, and exiting fullscreen will auto-submit your test.
+          </p>
+          {isFullscreenRequired ? (
+            <button
+              type="button"
+              onClick={handleEnterFullscreen}
+              className="rounded-xl border border-amber-300/70 bg-amber-400/20 px-4 py-2 text-sm font-semibold text-amber-100 transition hover:bg-amber-300/30"
+            >
+              Enter Fullscreen
+            </button>
+          ) : (
+            <p className="text-xs text-amber-100/90">Fullscreen active.</p>
+          )}
         </div>
       ) : null}
 
@@ -780,7 +963,7 @@ function StudentTestAttemptPage() {
             </div>
           </div>
 
-          <div className="min-h-[420px]">
+          <div className="h-[460px] min-h-[420px] sm:h-[520px]">
             <CodeEditor
               language={activeAnswer.language}
               code={activeAnswer.code}
@@ -790,7 +973,11 @@ function StudentTestAttemptPage() {
               onSubmit={() => handleSubmitTest(false)}
               templates={languageTemplates}
               isRunning={isRunning}
-              isSubmitting={isSubmitting}
+              isSubmitting={
+                isSubmitting
+                || isAttemptLocked
+                || (attempt.antiCheatingEnabled && isFullscreenRequired)
+              }
               onLargePaste={handleLargePaste}
             />
           </div>

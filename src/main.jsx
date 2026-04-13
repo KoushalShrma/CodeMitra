@@ -8,7 +8,7 @@ import { AuthProvider } from './context/AuthContext';
 import { ThemeProvider } from './hooks/useTheme';
 import './styles/globals.css';
 
-if (import.meta.env.DEV) {
+if (import.meta.env.DEV && import.meta.env.VITE_ENABLE_WDYR === 'true') {
   const whyDidYouRender = await import('@welldone-software/why-did-you-render');
   whyDidYouRender.default(React, { trackAllPureComponents: true });
 }

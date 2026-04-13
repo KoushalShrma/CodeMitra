@@ -112,6 +112,9 @@ function App() {
     || INSTITUTION_LEGACY_MIRROR_ROUTES.has(location.pathname);
   const isInstitutionLoginPath =
     location.pathname === '/institution/login' || location.pathname === '/institute/login';
+  const isInstitutionAttemptPath = /^\/institution\/test\/[^/]+\/attempt\/[^/]+$/.test(location.pathname);
+  const isStudentAttemptPath = /^\/test\/[^/]+$/.test(location.pathname);
+  const isFocusedAttemptPath = isInstitutionAttemptPath || isStudentAttemptPath;
   const hasInstitutionSession = Boolean(getInstitutionSessionToken());
   const canAccessInstitutionAttempt = Boolean(user || hasInstitutionSession);
   const isPublicAuthPath = PUBLIC_AUTH_ROUTES.has(location.pathname);
@@ -363,7 +366,7 @@ function App() {
         </a>
         <div className="ambient-grid" />
 
-        {hasInstitutionSession && !isInstitutionLoginPath ? (
+        {hasInstitutionSession && !isInstitutionLoginPath && !isInstitutionAttemptPath ? (
           <section className="page-container" style={{ paddingTop: 'var(--space-4)' }}>
             <div
               className="surface-card"
@@ -505,18 +508,30 @@ function App() {
           <Navigate to={defaultRoute} replace />
         ) : (
           <>
-            <div className={sidebarCollapsed ? 'app-layout app-layout-collapsed' : 'app-layout'}>
-              <Sidebar
-                items={sidebarItems}
-                collapsed={sidebarCollapsed}
-                onToggle={handleSidebarToggle}
-              />
+            <div
+              className={
+                isFocusedAttemptPath
+                  ? ''
+                  : sidebarCollapsed
+                    ? 'app-layout app-layout-collapsed'
+                    : 'app-layout'
+              }
+            >
+              {!isFocusedAttemptPath ? (
+                <Sidebar
+                  items={sidebarItems}
+                  collapsed={sidebarCollapsed}
+                  onToggle={handleSidebarToggle}
+                />
+              ) : null}
 
               <div>
-                <Navbar
-                  onOpenCommandPalette={() => setPaletteOpen(true)}
-                  onOpenShortcuts={() => setShortcutsOpen(true)}
-                />
+                {!isFocusedAttemptPath ? (
+                  <Navbar
+                    onOpenCommandPalette={() => setPaletteOpen(true)}
+                    onOpenShortcuts={() => setShortcutsOpen(true)}
+                  />
+                ) : null}
 
                 <main id="app-main" className="page-container">
                   <AnimatePresence mode="wait" initial={false}>
@@ -594,12 +609,16 @@ function App() {
               </div>
             </div>
 
-            <CommandPalette
-              isOpen={isPaletteOpen}
-              onClose={() => setPaletteOpen(false)}
-              commands={paletteCommands}
-            />
-            <ShortcutOverlay isOpen={isShortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+            {!isFocusedAttemptPath ? (
+              <>
+                <CommandPalette
+                  isOpen={isPaletteOpen}
+                  onClose={() => setPaletteOpen(false)}
+                  commands={paletteCommands}
+                />
+                <ShortcutOverlay isOpen={isShortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+              </>
+            ) : null}
           </>
         )}
       </SignedIn>

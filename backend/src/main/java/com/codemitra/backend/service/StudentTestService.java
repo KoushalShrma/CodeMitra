@@ -2,6 +2,7 @@ package com.codemitra.backend.service;
 
 import com.codemitra.backend.config.RoleMapper;
 import com.codemitra.backend.dto.TestDtos;
+import com.codemitra.backend.model.ProctoringEventEntity;
 import com.codemitra.backend.model.TestAttemptEntity;
 import com.codemitra.backend.model.TestCaseEntity;
 import com.codemitra.backend.model.TestEntity;
@@ -10,11 +11,16 @@ import com.codemitra.backend.model.TestReportEntity;
 import com.codemitra.backend.model.TestSubmissionEntity;
 import com.codemitra.backend.repository.TestAttemptRepository;
 import com.codemitra.backend.repository.TestCaseRepository;
+import com.codemitra.backend.repository.InstitutionRepository;
+import com.codemitra.backend.repository.InstitutionUserRepository;
+import com.codemitra.backend.repository.ProctoringEventRepository;
 import com.codemitra.backend.repository.TestQuestionRepository;
 import com.codemitra.backend.repository.TestReportRepository;
 import com.codemitra.backend.repository.TestSubmissionRepository;
 import com.codemitra.backend.repository.TestRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -33,6 +39,8 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class StudentTestService {
 
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
     private final TestRepository testRepository;
     private final TestQuestionRepository testQuestionRepository;
     private final TestCaseRepository testCaseRepository;
@@ -40,6 +48,9 @@ public class StudentTestService {
     private final TestSubmissionRepository testSubmissionRepository;
     private final TestReportRepository testReportRepository;
     private final TestReportAnalyticsService testReportAnalyticsService;
+    private final InstitutionRepository institutionRepository;
+    private final InstitutionUserRepository institutionUserRepository;
+    private final ProctoringEventRepository proctoringEventRepository;
     private final AuthService authService;
 
     public StudentTestService(
@@ -50,6 +61,9 @@ public class StudentTestService {
             TestSubmissionRepository testSubmissionRepository,
             TestReportRepository testReportRepository,
             TestReportAnalyticsService testReportAnalyticsService,
+            InstitutionRepository institutionRepository,
+            InstitutionUserRepository institutionUserRepository,
+            ProctoringEventRepository proctoringEventRepository,
             AuthService authService
     ) {
         this.testRepository = testRepository;
@@ -59,6 +73,9 @@ public class StudentTestService {
         this.testSubmissionRepository = testSubmissionRepository;
         this.testReportRepository = testReportRepository;
         this.testReportAnalyticsService = testReportAnalyticsService;
+        this.institutionRepository = institutionRepository;
+        this.institutionUserRepository = institutionUserRepository;
+        this.proctoringEventRepository = proctoringEventRepository;
         this.authService = authService;
     }
 
@@ -71,6 +88,8 @@ public class StudentTestService {
         List<Map<String, Object>> tests = testRepository
             .findByEndTimeGreaterThanEqualAndPublishedTrueOrderByStartTimeAscIdAsc(now)
                 .stream()
+                .filter(test -> test.getEndTime() != null && now.isBefore(test.getEndTime()))
+                .filter(test -> testQuestionRepository.existsByTestId(test.getId()))
                 .map(this::toTestSummary)
                 .toList();
         return Map.of("tests", tests);
@@ -87,6 +106,7 @@ public class StudentTestService {
 
         Long userId = resolveAttemptUserId(request.userId());
         TestEntity test = getActivePublishedTestById(request.testId());
+        ensureTestHasQuestions(test.getId());
         return createAttempt(test, userId);
     }
 
@@ -108,20 +128,46 @@ public class StudentTestService {
         }
 
         LocalDateTime now = LocalDateTime.now();
-        if (now.isAfter(test.getEndTime())) {
+        if (test.getStartTime() != null && now.isBefore(test.getStartTime())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "This test has not started yet");
+        }
+        if (test.getEndTime() == null || !now.isBefore(test.getEndTime())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "This test is no longer available");
         }
 
-        Long userId = resolveAttemptUserId(request.userId());
-        return createAttempt(test, userId);
+        Long userId = authService.getOrCreateCurrentUser().getId();
+        ensureTestHasQuestions(test.getId());
+        enforceJoinScope(test, userId);
+
+        TestAttemptEntity ongoingAttempt = resolveReusableOngoingAttempt(test.getId(), userId, now);
+        if (ongoingAttempt != null) {
+            return Map.of(
+                    "attemptId", ongoingAttempt.getId(),
+                    "testId", ongoingAttempt.getTestId()
+            );
+        }
+
+        TestAttemptEntity createdAttempt = createAttemptEntity(test, userId);
+        return Map.of(
+                "attemptId", createdAttempt.getId(),
+                "testId", createdAttempt.getTestId()
+        );
     }
 
     private TestEntity getActivePublishedTestById(Long testId) {
         LocalDateTime now = LocalDateTime.now();
-        return testRepository.findById(testId)
+        TestEntity test = testRepository.findById(testId)
                 .filter(item -> !Boolean.FALSE.equals(item.getPublished()))
-            .filter(item -> !now.isAfter(item.getEndTime()))
-            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Available test not found"));
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Available test not found"));
+
+        if (test.getStartTime() != null && now.isBefore(test.getStartTime())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "This test has not started yet");
+        }
+        if (test.getEndTime() == null || !now.isBefore(test.getEndTime())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "This test is no longer available");
+        }
+
+        return test;
     }
 
     private Long resolveAttemptUserId(Long requestedUserId) {
@@ -132,6 +178,14 @@ public class StudentTestService {
     }
 
     private Map<String, Object> createAttempt(TestEntity test, Long userId) {
+        TestAttemptEntity saved = createAttemptEntity(test, userId);
+        return Map.of(
+                "message", "Test attempt started",
+                "attempt", toAttemptSummary(saved)
+        );
+    }
+
+    private TestAttemptEntity createAttemptEntity(TestEntity test, Long userId) {
         LocalDateTime now = LocalDateTime.now();
 
         if (test == null) {
@@ -139,19 +193,44 @@ public class StudentTestService {
         }
 
         if (!Boolean.TRUE.equals(test.getAllowMultipleAttempts())) {
-            boolean alreadyAttempted = testAttemptRepository.existsByTestIdAndUserIdAndStatusIn(
-                    test.getId(),
-                    userId,
-                    List.of("ongoing", "completed")
-            );
-            if (alreadyAttempted) {
+            List<TestAttemptEntity> priorAttempts = testAttemptRepository
+                    .findByTestIdAndUserIdOrderByStartTimeDesc(test.getId(), userId);
+
+            boolean hasBlockingAttempt = priorAttempts.stream().anyMatch(existing -> {
+                TestAttemptEntity normalized = closeExpiredOngoingAttemptIfNeeded(existing, now);
+                if ("ongoing".equalsIgnoreCase(normalized.getStatus())) {
+                    return true;
+                }
+
+                if (!"completed".equalsIgnoreCase(normalized.getStatus())) {
+                    return false;
+                }
+
+                return !isPotentialImmediateAutoSubmit(normalized);
+            });
+
+            if (hasBlockingAttempt) {
                 throw new ResponseStatusException(HttpStatus.CONFLICT,
                         "Multiple attempts are not allowed for this test");
             }
         }
 
-        LocalDateTime tentativeEnd = now.plusMinutes(test.getDuration());
+        Integer configuredDuration = test.getDuration();
+        if (configuredDuration == null || configuredDuration <= 0) {
+            configuredDuration = test.getDurationMinutes();
+        }
+        if (configuredDuration == null || configuredDuration <= 0) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Test duration is invalid");
+        }
+        if (test.getEndTime() == null) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Test end time is invalid");
+        }
+
+        LocalDateTime tentativeEnd = now.plusMinutes(configuredDuration);
         LocalDateTime finalEnd = tentativeEnd.isAfter(test.getEndTime()) ? test.getEndTime() : tentativeEnd;
+        if (!finalEnd.isAfter(now)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "This test is no longer available");
+        }
 
         TestAttemptEntity attempt = new TestAttemptEntity();
         attempt.setTestId(test.getId());
@@ -160,11 +239,27 @@ public class StudentTestService {
         attempt.setEndTime(finalEnd);
         attempt.setStatus("ongoing");
 
-        TestAttemptEntity saved = testAttemptRepository.save(attempt);
-        return Map.of(
-                "message", "Test attempt started",
-                "attempt", toAttemptSummary(saved)
-        );
+        return testAttemptRepository.save(attempt);
+    }
+
+    private void enforceJoinScope(TestEntity test, Long userId) {
+        String scope = test.getAccessScope() == null
+                ? "INSTITUTION_MEMBERS"
+                : test.getAccessScope().trim().toUpperCase(Locale.ROOT);
+
+        if (!"INSTITUTION_MEMBERS".equals(scope)) {
+            return;
+        }
+
+        Long institutionId = test.getInstitutionId();
+        if (institutionId == null || institutionId <= 0 || !institutionRepository.existsById(institutionId)) {
+            return;
+        }
+
+        boolean member = institutionUserRepository.existsByUserIdAndInstitutionId(userId, institutionId);
+        if (!member) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "This test is limited to institution members");
+        }
     }
 
     /**
@@ -179,10 +274,15 @@ public class StudentTestService {
 
         enforceStudentOwnership(attempt.getUserId());
 
+        attempt = closeExpiredOngoingAttemptIfNeeded(attempt, LocalDateTime.now());
+
         TestEntity test = testRepository.findById(attempt.getTestId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Test not found"));
 
         List<TestQuestionEntity> questions = testQuestionRepository.findByTestIdOrderByIdAsc(test.getId());
+        if (questions.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Test attempt not available. This test has no questions yet.");
+        }
         List<Long> questionIds = questions.stream().map(TestQuestionEntity::getId).toList();
         List<TestCaseEntity> testCases = questionIds.isEmpty()
                 ? List.of()
@@ -254,6 +354,9 @@ public class StudentTestService {
         TestAttemptEntity attempt = testAttemptRepository.findById(request.attemptId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Attempt not found"));
         enforceStudentOwnership(attempt.getUserId());
+        if (!"ongoing".equalsIgnoreCase(attempt.getStatus())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "This attempt is already submitted");
+        }
 
         TestSubmissionEntity submission = testSubmissionRepository.findByAttemptIdAndQuestionId(request.attemptId(), request.questionId())
                 .orElseGet(TestSubmissionEntity::new);
@@ -291,6 +394,16 @@ public class StudentTestService {
         }
 
         testAttemptRepository.save(attempt);
+
+        ProctoringEventEntity event = new ProctoringEventEntity();
+        event.setTestId(attempt.getTestId());
+        event.setAttemptId(attempt.getId());
+        event.setUserId(attempt.getUserId());
+        event.setEventType(type);
+        event.setEventPayload(writeJson(request.eventPayload() == null ? Map.of() : request.eventPayload(), "{}"));
+        event.setOccurredAt(LocalDateTime.now());
+        proctoringEventRepository.save(event);
+
         return Map.of("message", "Anti-cheat event tracked");
     }
 
@@ -306,6 +419,27 @@ public class StudentTestService {
         TestAttemptEntity attempt = testAttemptRepository.findById(request.attemptId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Attempt not found"));
         enforceStudentOwnership(attempt.getUserId());
+
+        String submitMode = normalizeSubmitMode(request.submitMode());
+        LocalDateTime now = LocalDateTime.now();
+
+        if ("time_up".equals(submitMode)) {
+            if (attempt.getEndTime() == null || now.isBefore(attempt.getEndTime())) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "Timer is still running");
+            }
+        }
+
+        if ("fullscreen_exit".equals(submitMode)) {
+            long fullscreenExitCount = proctoringEventRepository.findByAttemptIdOrderByOccurredAtAsc(attempt.getId())
+                    .stream()
+                    .filter(event -> "fullscreen_exit".equalsIgnoreCase(event.getEventType()))
+                    .count();
+
+            if (fullscreenExitCount < 2) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "Fullscreen exit threshold not reached");
+            }
+        }
 
         List<TestQuestionEntity> questions = testQuestionRepository.findByTestIdOrderByIdAsc(attempt.getTestId());
         List<TestSubmissionEntity> submissions = testSubmissionRepository.findByAttemptId(request.attemptId());
@@ -372,21 +506,44 @@ public class StudentTestService {
     }
 
     private Map<String, Object> toAttemptSummary(TestAttemptEntity attempt) {
-        return Map.of(
-                "id", attempt.getId(),
-                "testId", attempt.getTestId(),
-                "userId", attempt.getUserId(),
-                "startTime", attempt.getStartTime(),
-                "endTime", attempt.getEndTime(),
-                "status", attempt.getStatus(),
-                "tabSwitchCount", attempt.getTabSwitchCount(),
-                "antiCheatFlags", attempt.getAntiCheatFlags(),
-                "submittedAt", attempt.getSubmittedAt(),
-                "totalScore", attempt.getTotalScore()
-        );
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("id", attempt.getId());
+        payload.put("testId", attempt.getTestId());
+        payload.put("userId", attempt.getUserId());
+        payload.put("startTime", attempt.getStartTime());
+        payload.put("endTime", attempt.getEndTime());
+        payload.put("status", attempt.getStatus());
+        payload.put("tabSwitchCount", attempt.getTabSwitchCount());
+        payload.put("antiCheatFlags", attempt.getAntiCheatFlags());
+        payload.put("submittedAt", attempt.getSubmittedAt());
+        payload.put("totalScore", attempt.getTotalScore());
+        payload.put("remainingSeconds", computeRemainingSeconds(attempt));
+        return payload;
+    }
+
+    private int computeRemainingSeconds(TestAttemptEntity attempt) {
+        if (attempt == null || !"ongoing".equalsIgnoreCase(attempt.getStatus())) {
+            return 0;
+        }
+
+        LocalDateTime endTime = attempt.getEndTime();
+        if (endTime == null) {
+            return 0;
+        }
+
+        long millisRemaining = Duration.between(LocalDateTime.now(), endTime).toMillis();
+        if (millisRemaining <= 0) {
+            return 0;
+        }
+
+        return (int) Math.ceil(millisRemaining / 1000.0);
     }
 
     private Map<String, Object> toTestSummary(TestEntity test) {
+        LocalDateTime now = LocalDateTime.now();
+        boolean started = test.getStartTime() == null || !now.isBefore(test.getStartTime());
+        boolean ended = test.getEndTime() == null || !now.isBefore(test.getEndTime());
+
         Map<String, Object> payload = new HashMap<>();
         payload.put("id", test.getId());
         payload.put("instituteId", test.getInstituteId());
@@ -402,6 +559,7 @@ public class StudentTestService {
         payload.put("allowMultipleAttempts", Boolean.TRUE.equals(test.getAllowMultipleAttempts()));
         payload.put("antiCheatingEnabled", Boolean.TRUE.equals(test.getAntiCheatingEnabled()));
         payload.put("showResults", Boolean.TRUE.equals(test.getShowResults()));
+        payload.put("canJoinNow", started && !ended);
         payload.put("createdAt", test.getCreatedAt());
         return payload;
     }
@@ -414,6 +572,12 @@ public class StudentTestService {
         }
     }
 
+    private void ensureTestHasQuestions(Long testId) {
+        if (!testQuestionRepository.existsByTestId(testId)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Test attempt not available. This test has no questions yet.");
+        }
+    }
+
     private int toInt(Object value) {
         if (value instanceof Number number) {
             return number.intValue();
@@ -421,10 +585,77 @@ public class StudentTestService {
         return 0;
     }
 
+    private TestAttemptEntity resolveReusableOngoingAttempt(Long testId, Long userId, LocalDateTime now) {
+        TestAttemptEntity attempt = testAttemptRepository
+                .findFirstByTestIdAndUserIdAndStatusOrderByStartTimeDesc(testId, userId, "ongoing")
+                .orElse(null);
+
+        if (attempt == null) {
+            return null;
+        }
+
+        return closeExpiredOngoingAttemptIfNeeded(attempt, now);
+    }
+
+    private TestAttemptEntity closeExpiredOngoingAttemptIfNeeded(TestAttemptEntity attempt, LocalDateTime now) {
+        if (attempt == null || !"ongoing".equalsIgnoreCase(attempt.getStatus())) {
+            return attempt;
+        }
+
+        LocalDateTime endTime = attempt.getEndTime();
+        if (endTime == null || now.isBefore(endTime)) {
+            return attempt;
+        }
+
+        attempt.setStatus("completed");
+        if (attempt.getSubmittedAt() == null) {
+            attempt.setSubmittedAt(endTime);
+        }
+        return testAttemptRepository.save(attempt);
+    }
+
+    private boolean isPotentialImmediateAutoSubmit(TestAttemptEntity attempt) {
+        if (attempt == null || !"completed".equalsIgnoreCase(attempt.getStatus())) {
+            return false;
+        }
+
+        LocalDateTime startedAt = attempt.getStartTime();
+        LocalDateTime submittedAt = attempt.getSubmittedAt();
+        if (startedAt == null || submittedAt == null) {
+            return false;
+        }
+
+        Integer score = attempt.getTotalScore();
+        boolean zeroScore = score == null || score <= 0;
+        boolean immediateSubmit = !submittedAt.isAfter(startedAt.plusSeconds(2));
+
+        return immediateSubmit && zeroScore;
+    }
+
     private double toDouble(Object value) {
         if (value instanceof Number number) {
             return number.doubleValue();
         }
         return 0.0;
+    }
+
+    private String writeJson(Object value, String fallback) {
+        try {
+            return OBJECT_MAPPER.writeValueAsString(value);
+        } catch (Exception ignored) {
+            return fallback;
+        }
+    }
+
+    private String normalizeSubmitMode(String submitMode) {
+        if (submitMode == null || submitMode.isBlank()) {
+            return "manual";
+        }
+
+        String normalized = submitMode.trim().toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case "manual", "time_up", "fullscreen_exit" -> normalized;
+            default -> "manual";
+        };
     }
 }

@@ -2,6 +2,7 @@ package com.codemitra.backend.dto;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 /**
  * DTOs for institute test creation and student attempt operations.
@@ -85,7 +86,8 @@ public final class TestDtos {
      * Payload for final attempt submission.
      */
     public record SubmitAttemptRequest(
-            Long attemptId
+            Long attemptId,
+            String submitMode
     ) {
     }
 
@@ -94,7 +96,8 @@ public final class TestDtos {
      */
     public record AntiCheatRequest(
             Long attemptId,
-            String type
+            String type,
+            Map<String, Object> eventPayload
     ) {
     }
 }

@@ -38,9 +38,9 @@ public class StudentTestController {
     }
 
     /**
-     * POST /api/student-tests/join-by-code creates an attempt using unique test join code.
+     * POST /api/tests/join-by-code resolves or creates an attempt from a join code.
      */
-    @PostMapping("/api/student-tests/join-by-code")
+    @PostMapping({"/api/tests/join-by-code", "/api/student-tests/join-by-code"})
     public Map<String, Object> joinByCode(@RequestBody TestDtos.JoinByCodeRequest request) {
         return studentTestService.startTestAttemptByCode(request);
     }

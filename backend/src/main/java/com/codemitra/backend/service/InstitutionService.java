@@ -12,6 +12,7 @@ import com.codemitra.backend.model.InstituteEntity;
 import com.codemitra.backend.model.InstitutionEntity;
 import com.codemitra.backend.model.InstitutionUserEntity;
 import com.codemitra.backend.model.ProctoringEventEntity;
+import com.codemitra.backend.model.TestCaseEntity;
 import com.codemitra.backend.model.UserEntity;
 import com.codemitra.backend.model.TestAttemptEntity;
 import com.codemitra.backend.model.TestEntity;
@@ -27,6 +28,7 @@ import com.codemitra.backend.repository.InstitutionUserRepository;
 import com.codemitra.backend.repository.ProblemAttemptRepository;
 import com.codemitra.backend.repository.ProctoringEventRepository;
 import com.codemitra.backend.repository.TestAttemptRepository;
+import com.codemitra.backend.repository.TestCaseRepository;
 import com.codemitra.backend.repository.TestProblemRepository;
 import com.codemitra.backend.repository.TestQuestionRepository;
 import com.codemitra.backend.repository.TestReportRepository;
@@ -80,8 +82,10 @@ public class InstitutionService {
     private final TestSubmissionRepository testSubmissionRepository;
     private final TestReportRepository testReportRepository;
     private final TestQuestionRepository testQuestionRepository;
+    private final TestCaseRepository testCaseRepository;
     private final ProctoringEventRepository proctoringEventRepository;
     private final ProblemAttemptRepository problemAttemptRepository;
+    private final TestReportAnalyticsService testReportAnalyticsService;
     private final StudentTestService studentTestService;
     private final InstitutionSecurityUtils institutionSecurityUtils;
 
@@ -100,10 +104,12 @@ public class InstitutionService {
             TestSubmissionRepository testSubmissionRepository,
             TestReportRepository testReportRepository,
             TestQuestionRepository testQuestionRepository,
+            TestCaseRepository testCaseRepository,
             ProctoringEventRepository proctoringEventRepository,
             ProblemAttemptRepository problemAttemptRepository,
-                StudentTestService studentTestService,
-                InstitutionSecurityUtils institutionSecurityUtils
+                TestReportAnalyticsService testReportAnalyticsService,
+            StudentTestService studentTestService,
+            InstitutionSecurityUtils institutionSecurityUtils
     ) {
         this.authService = authService;
         this.userRepository = userRepository;
@@ -119,8 +125,10 @@ public class InstitutionService {
         this.testSubmissionRepository = testSubmissionRepository;
         this.testReportRepository = testReportRepository;
         this.testQuestionRepository = testQuestionRepository;
+        this.testCaseRepository = testCaseRepository;
         this.proctoringEventRepository = proctoringEventRepository;
         this.problemAttemptRepository = problemAttemptRepository;
+        this.testReportAnalyticsService = testReportAnalyticsService;
         this.studentTestService = studentTestService;
         this.institutionSecurityUtils = institutionSecurityUtils;
     }
@@ -206,10 +214,14 @@ public class InstitutionService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "title, startTime, endTime, and durationMinutes are required");
         }
+        validateTestWindow(request.startTime(), request.endTime());
+
+        validateQuestionItems(request.questions());
+        List<InstitutionDtos.TestProblemItem> problemItems = resolveProblemItems(request.problems(), request.questions());
 
         institution = ensureLegacyInstituteMirror(institution);
 
-    Long currentUserId = resolveActorUserId(institutionId);
+        Long currentUserId = resolveActorUserId(institutionId);
 
         TestEntity test = new TestEntity();
         test.setInstituteId(institution.getLegacyInstituteId());
@@ -235,7 +247,8 @@ public class InstitutionService {
         test.setShowResults(false);
 
         TestEntity saved = testRepository.save(test);
-        persistTestProblems(saved.getId(), request.problems());
+        persistTestProblems(saved.getId(), problemItems);
+        persistTestQuestions(saved.getId(), request.questions());
 
         return Map.of(
                 "message", "Test created",
@@ -287,8 +300,38 @@ public class InstitutionService {
                 ))
                 .toList();
 
+            List<TestQuestionEntity> questionEntities = testQuestionRepository.findByTestIdOrderByIdAsc(testId);
+            List<Long> questionIds = questionEntities.stream().map(TestQuestionEntity::getId).toList();
+            List<TestCaseEntity> questionTestCases = questionIds.isEmpty()
+                ? List.of()
+                : testCaseRepository.findByQuestionIdInOrderByIdAsc(questionIds);
+
+            List<Map<String, Object>> questions = questionEntities.stream()
+                .map(question -> {
+                    List<Map<String, Object>> nestedCases = questionTestCases.stream()
+                        .filter(testCase -> testCase.getQuestionId().equals(question.getId()))
+                        .map(testCase -> Map.<String, Object>of(
+                            "id", testCase.getId(),
+                            "input", testCase.getInput(),
+                            "expectedOutput", testCase.getExpectedOutput()
+                        ))
+                        .toList();
+
+                    Map<String, Object> payload = new LinkedHashMap<>();
+                    payload.put("id", question.getId());
+                    payload.put("problemId", question.getProblemId());
+                    payload.put("customQuestion", question.getCustomQuestion());
+                    payload.put("difficulty", question.getDifficulty());
+                    payload.put("topic", question.getTopic());
+                    payload.put("pattern", question.getPattern());
+                    payload.put("testCases", nestedCases);
+                    return payload;
+                })
+                .toList();
+
         Map<String, Object> payload = new HashMap<>(toInstitutionTestSummary(test));
         payload.put("problems", problems);
+            payload.put("questions", questions);
         return Map.of("test", payload);
     }
 
@@ -353,11 +396,17 @@ public class InstitutionService {
             test.setPublished(request.published());
         }
 
+        validateTestWindow(test.getStartTime(), test.getEndTime());
+
         TestEntity saved = testRepository.save(test);
 
-        if (request.problems() != null) {
+        boolean shouldReplaceAssignments = request.problems() != null || request.questions() != null;
+        if (shouldReplaceAssignments) {
+            validateQuestionItems(request.questions());
+            List<InstitutionDtos.TestProblemItem> problemItems = resolveProblemItems(request.problems(), request.questions());
             testProblemRepository.deleteByTestId(saved.getId());
-            persistTestProblems(saved.getId(), request.problems());
+            persistTestProblems(saved.getId(), problemItems);
+            replaceTestQuestions(saved.getId(), request.questions());
         }
 
         return Map.of(
@@ -496,12 +545,27 @@ public class InstitutionService {
         List<TestSubmissionEntity> submissions = attemptIds.isEmpty()
                 ? List.of()
                 : testSubmissionRepository.findByAttemptIdIn(attemptIds);
+        List<TestQuestionEntity> questionEntities = testQuestionRepository.findByTestIdOrderByIdAsc(testId);
+
+        Map<Long, TestQuestionEntity> questionsById = new HashMap<>();
+        for (TestQuestionEntity question : questionEntities) {
+            questionsById.put(question.getId(), question);
+        }
+
+        Map<Long, List<TestSubmissionEntity>> submissionsByAttempt = new HashMap<>();
+        for (TestSubmissionEntity submission : submissions) {
+            submissionsByAttempt
+                    .computeIfAbsent(submission.getAttemptId(), ignored -> new ArrayList<>())
+                    .add(submission);
+        }
+
         Map<Long, TestReportEntity> reportsByAttempt = new HashMap<>();
         for (TestReportEntity report : testReportRepository.findByTestId(testId)) {
             reportsByAttempt.put(report.getAttemptId(), report);
         }
 
         List<Map<String, Object>> rows = new ArrayList<>();
+        List<Map<String, Object>> attemptDetails = new ArrayList<>();
         Map<Long, String> candidateNames = new HashMap<>();
         int rank = 1;
         for (TestAttemptEntity attempt : attempts) {
@@ -512,12 +576,36 @@ public class InstitutionService {
                     .orElse("Candidate " + userId)
             );
 
+            List<TestSubmissionEntity> attemptSubmissions = submissionsByAttempt.getOrDefault(attempt.getId(), List.of());
+
             TestReportEntity report = reportsByAttempt.get(attempt.getId());
-            int solved = (int) submissions.stream()
-                    .filter(item -> item.getAttemptId().equals(attempt.getId()))
+            int solved = (int) attemptSubmissions.stream()
                     .filter(item -> item.getTotal() != null && item.getPassed() != null && item.getTotal() > 0)
                     .filter(item -> item.getPassed().equals(item.getTotal()))
                     .count();
+
+            Map<String, Object> attemptMap = new HashMap<>();
+            attemptMap.put("id", attempt.getId());
+            attemptMap.put("testId", attempt.getTestId());
+            attemptMap.put("userId", attempt.getUserId());
+            attemptMap.put("startTime", attempt.getStartTime());
+            attemptMap.put("endTime", attempt.getSubmittedAt() == null ? attempt.getEndTime() : attempt.getSubmittedAt());
+            attemptMap.put("status", attempt.getStatus());
+
+            List<Map<String, Object>> submissionMaps = attemptSubmissions.stream()
+                    .map(item -> {
+                        Map<String, Object> payload = new LinkedHashMap<>();
+                        payload.put("questionId", item.getQuestionId());
+                        payload.put("code", item.getCode());
+                        payload.put("language", item.getLanguage());
+                        payload.put("passed", item.getPassed());
+                        payload.put("total", item.getTotal());
+                        return payload;
+                    })
+                    .toList();
+
+            Map<String, Object> reportPayload = testReportAnalyticsService
+                    .buildStudentReport(attemptMap, submissionMaps, questionEntities);
 
             double hintUsage = problemAttemptRepository.findByUserIdAndTestId(attempt.getUserId(), testId)
                     .stream()
@@ -529,14 +617,48 @@ public class InstitutionService {
                 row.put("attemptId", attempt.getId());
                 row.put("candidateId", attempt.getUserId());
                 row.put("candidateName", candidateName);
-                row.put("score", report == null ? attempt.getTotalScore() : report.getScore());
-                row.put("accuracy", report == null ? 0 : report.getAccuracy());
+                row.put("score", report == null ? toInt(reportPayload.get("score")) : report.getScore());
+                row.put("accuracy", report == null ? toDouble(reportPayload.get("accuracy")) : report.getAccuracy());
                 row.put("timeTakenSeconds", computeAttemptDurationSeconds(attempt));
                 row.put("problemsSolved", solved);
                 row.put("status", attempt.getStatus());
                 row.put("hintUsage", hintUsage);
                 row.put("tabSwitchCount", attempt.getTabSwitchCount());
                 rows.add(row);
+
+            List<Map<String, Object>> submissionDetails = attemptSubmissions.stream()
+                    .map(item -> {
+                        TestQuestionEntity question = questionsById.get(item.getQuestionId());
+
+                        Map<String, Object> detail = new LinkedHashMap<>();
+                        detail.put("submissionId", item.getId());
+                        detail.put("questionId", item.getQuestionId());
+                        detail.put("problemId", question == null ? "" : question.getProblemId());
+                        detail.put("topic", question == null ? "" : question.getTopic());
+                        detail.put("pattern", question == null ? "" : question.getPattern());
+                        detail.put("language", item.getLanguage());
+                        detail.put("passed", item.getPassed());
+                        detail.put("total", item.getTotal());
+                        detail.put("status", getQuestionStatus(item.getPassed(), item.getTotal()));
+                        detail.put("updatedAt", item.getUpdatedAt());
+                        detail.put("code", item.getCode());
+                        return detail;
+                    })
+                    .toList();
+
+            Map<String, Object> detailRow = new LinkedHashMap<>();
+            detailRow.put("rank", rank);
+            detailRow.put("attemptId", attempt.getId());
+            detailRow.put("candidateId", attempt.getUserId());
+            detailRow.put("candidateName", candidateName);
+            detailRow.put("status", attempt.getStatus());
+            detailRow.put("submittedAt", attempt.getSubmittedAt());
+            detailRow.put("tabSwitchCount", attempt.getTabSwitchCount());
+            detailRow.put("antiCheatFlags", attempt.getAntiCheatFlags());
+            detailRow.put("report", reportPayload);
+            detailRow.put("submissions", submissionDetails);
+            attemptDetails.add(detailRow);
+
             rank += 1;
         }
 
@@ -567,6 +689,7 @@ public class InstitutionService {
         return Map.of(
                 "testId", testId,
                 "rows", rows,
+                "attemptDetails", attemptDetails,
                 "scoreDistribution", scoreHistogram,
                 "hardestProblems", hardestProblems,
             "plagiarismFlags", plagiarismFlags,
@@ -629,7 +752,10 @@ public class InstitutionService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Attempt does not belong to this test");
         }
 
-        return studentTestService.submitTestAttempt(new TestDtos.SubmitAttemptRequest(request.attemptId()));
+        return studentTestService.submitTestAttempt(new TestDtos.SubmitAttemptRequest(
+            request.attemptId(),
+            request.submitMode()
+        ));
     }
 
     /**
@@ -661,16 +787,11 @@ public class InstitutionService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Attempt does not belong to this test");
         }
 
-        studentTestService.trackAntiCheat(new TestDtos.AntiCheatRequest(request.attemptId(), request.eventType()));
-
-        ProctoringEventEntity event = new ProctoringEventEntity();
-        event.setTestId(testId);
-        event.setAttemptId(request.attemptId());
-        event.setUserId(attempt.getUserId());
-        event.setEventType(request.eventType());
-        event.setEventPayload(writeJson(request.eventPayload() == null ? Map.of() : request.eventPayload(), "{}"));
-        event.setOccurredAt(LocalDateTime.now());
-        proctoringEventRepository.save(event);
+        studentTestService.trackAntiCheat(new TestDtos.AntiCheatRequest(
+                request.attemptId(),
+                request.eventType(),
+                request.eventPayload()
+        ));
 
         return Map.of("message", "Proctoring event logged");
     }
@@ -755,6 +876,92 @@ public class InstitutionService {
         return instituteRepository.save(legacy);
     }
 
+    private List<InstitutionDtos.TestProblemItem> resolveProblemItems(
+            List<InstitutionDtos.TestProblemItem> explicitItems,
+            List<InstitutionDtos.TestQuestionItem> questionItems
+    ) {
+        if (explicitItems != null && !explicitItems.isEmpty()) {
+            return explicitItems;
+        }
+
+        if (questionItems == null || questionItems.isEmpty()) {
+            return List.of();
+        }
+
+        List<InstitutionDtos.TestProblemItem> derived = new ArrayList<>();
+        for (int index = 0; index < questionItems.size(); index += 1) {
+            InstitutionDtos.TestQuestionItem question = questionItems.get(index);
+            if (question == null || question.problemId() == null || question.problemId().isBlank()) {
+                continue;
+            }
+
+            derived.add(new InstitutionDtos.TestProblemItem(
+                    question.problemId().trim(),
+                    index + 1,
+                    100
+            ));
+        }
+
+        return derived;
+    }
+
+    private void validateQuestionItems(List<InstitutionDtos.TestQuestionItem> questionItems) {
+        if (questionItems == null || questionItems.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "questions are required and must include at least one test case");
+        }
+
+        for (InstitutionDtos.TestQuestionItem question : questionItems) {
+            if (question == null) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Each question is required");
+            }
+
+            boolean hasProblemId = question.problemId() != null && !question.problemId().isBlank();
+            boolean hasCustomQuestion = question.customQuestion() != null && !question.customQuestion().isBlank();
+            if (!hasProblemId && !hasCustomQuestion) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Each question must reference an existing problem or provide a custom question");
+            }
+
+            if (question.difficulty() == null || question.difficulty().isBlank()
+                    || question.topic() == null || question.topic().isBlank()
+                    || question.pattern() == null || question.pattern().isBlank()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Each question must include difficulty, topic, and pattern");
+            }
+
+            if (question.testCases() == null || question.testCases().isEmpty()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Each question must include at least one test case");
+            }
+
+            boolean hasInvalidTestCase = question.testCases().stream().anyMatch(item ->
+                    item == null
+                            || item.input() == null
+                            || item.input().isBlank()
+                            || item.expectedOutput() == null
+                            || item.expectedOutput().isBlank()
+            );
+            if (hasInvalidTestCase) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Each test case must include input and expectedOutput");
+            }
+        }
+    }
+
+    private void replaceTestQuestions(Long testId, List<InstitutionDtos.TestQuestionItem> questionItems) {
+        List<Long> existingQuestionIds = testQuestionRepository.findByTestIdOrderByIdAsc(testId)
+                .stream()
+                .map(TestQuestionEntity::getId)
+                .toList();
+        if (!existingQuestionIds.isEmpty()) {
+            testCaseRepository.deleteByQuestionIdIn(existingQuestionIds);
+        }
+
+        testQuestionRepository.deleteByTestId(testId);
+        persistTestQuestions(testId, questionItems);
+    }
+
     private void persistTestProblems(Long testId, List<InstitutionDtos.TestProblemItem> items) {
         if (items == null) {
             return;
@@ -772,6 +979,39 @@ public class InstitutionService {
             entity.setOrderIndex(item.orderIndex() == null ? index + 1 : item.orderIndex());
             entity.setMarks(item.marks() == null ? 100 : Math.max(item.marks(), 1));
             testProblemRepository.save(entity);
+        }
+    }
+
+    private void persistTestQuestions(Long testId, List<InstitutionDtos.TestQuestionItem> questionItems) {
+        if (questionItems == null) {
+            return;
+        }
+
+        for (InstitutionDtos.TestQuestionItem questionItem : questionItems) {
+            if (questionItem == null) {
+                continue;
+            }
+
+            TestQuestionEntity questionEntity = new TestQuestionEntity();
+            questionEntity.setTestId(testId);
+            questionEntity.setProblemId(blankToNull(questionItem.problemId()));
+            questionEntity.setCustomQuestion(blankToNull(questionItem.customQuestion()));
+            questionEntity.setDifficulty(questionItem.difficulty().trim());
+            questionEntity.setTopic(questionItem.topic().trim());
+            questionEntity.setPattern(questionItem.pattern().trim());
+            TestQuestionEntity savedQuestion = testQuestionRepository.save(questionEntity);
+
+            for (InstitutionDtos.TestQuestionTestCaseItem testCaseItem : questionItem.testCases()) {
+                if (testCaseItem == null) {
+                    continue;
+                }
+
+                TestCaseEntity testCase = new TestCaseEntity();
+                testCase.setQuestionId(savedQuestion.getId());
+                testCase.setInput(testCaseItem.input());
+                testCase.setExpectedOutput(testCaseItem.expectedOutput());
+                testCaseRepository.save(testCase);
+            }
         }
     }
 
@@ -882,6 +1122,19 @@ public class InstitutionService {
         return union.isEmpty() ? 0.0 : (double) intersection.size() / union.size();
     }
 
+    private String getQuestionStatus(Integer passed, Integer total) {
+        int passedCount = passed == null ? 0 : passed;
+        int totalCount = total == null ? 0 : total;
+
+        if (totalCount > 0 && passedCount == totalCount) {
+            return "Great";
+        }
+        if (passedCount > 0) {
+            return "Mistake";
+        }
+        return "Blunder";
+    }
+
     private long computeAttemptDurationSeconds(TestAttemptEntity attempt) {
         LocalDateTime start = attempt.getStartTime();
         LocalDateTime end = attempt.getSubmittedAt() == null ? attempt.getEndTime() : attempt.getSubmittedAt();
@@ -889,6 +1142,16 @@ public class InstitutionService {
             return 0;
         }
         return Math.max(Duration.between(start, end).toSeconds(), 0);
+    }
+
+    private void validateTestWindow(LocalDateTime startTime, LocalDateTime endTime) {
+        if (startTime == null || endTime == null) {
+            return;
+        }
+
+        if (!endTime.isAfter(startTime)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "endTime must be later than startTime");
+        }
     }
 
     private Map<String, Object> toInstitutionSummary(InstitutionEntity institution) {

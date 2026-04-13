@@ -238,6 +238,17 @@ function CreateTestPage() {
           orderIndex: index + 1,
           marks: 100,
         })),
+        questions: questions.map((question) => ({
+          problemId: question.problemId || null,
+          customQuestion: question.customQuestion || null,
+          difficulty: question.difficulty,
+          topic: question.topic,
+          pattern: question.pattern,
+          testCases: question.testCases.map((testCase) => ({
+            input: testCase.input,
+            expectedOutput: testCase.expectedOutput,
+          })),
+        })),
       });
 
       setSuccessMessage(response.message || 'Test created successfully');
