@@ -1,7 +1,7 @@
-import { SignIn } from '@clerk/clerk-react';
 import { Navigate } from 'react-router-dom';
 import { useSearchParams } from 'react-router-dom';
 import AuthRoleSwitch from '../components/auth/AuthRoleSwitch';
+import { SignInCompat as SignIn } from '../lib/clerkCompat';
 
 function Login() {
   const [searchParams] = useSearchParams();

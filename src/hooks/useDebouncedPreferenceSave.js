@@ -1,7 +1,7 @@
-import { useAuth as useClerkAuth } from '@clerk/clerk-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { useAuthCompat as useClerkAuth } from '../lib/clerkCompat';
 import { updateCurrentUserProfile } from '../services/apiClient';
 import { queryKeys } from '../services/queryConfig';
 import { normalizeProfilePreferences } from '../utils/profilePreferences';

@@ -1,9 +1,9 @@
 import { Bell, ChevronDown, LogOut, Search } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
-import { useUser } from '@clerk/clerk-react';
 import { useNavigate } from 'react-router-dom';
 import { ThemeToggle } from '../ui/ThemeToggle';
+import { useUserCompat as useUser } from '../../lib/clerkCompat';
 import { Avatar } from '../ui/Avatar';
 import { Button } from '../ui/Button';
 import { SessionTimer } from './SessionTimer';

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
-import { useClerk, useUser } from '@clerk/clerk-react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
+import { useClerkCompat as useClerk, useUserCompat as useUser } from '../lib/clerkCompat';
 import { useAuth } from '../context/AuthContext';
 import { BASE_URL } from '../services/apiClient';
 import { getDefaultRouteForUser } from '../utils/authStorage';

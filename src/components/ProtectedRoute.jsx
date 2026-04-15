@@ -1,5 +1,9 @@
-import { RedirectToSignIn, SignedIn, SignedOut } from '@clerk/clerk-react';
 import { Navigate, Outlet } from 'react-router-dom';
+import {
+  RedirectToSignInCompat as RedirectToSignIn,
+  SignedInCompat as SignedIn,
+  SignedOutCompat as SignedOut,
+} from '../lib/clerkCompat';
 import { useAuth } from '../context/AuthContext';
 import { getDefaultRouteForUser } from '../utils/authStorage';
 

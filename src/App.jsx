@@ -1,4 +1,3 @@
-import { SignedIn, SignedOut } from '@clerk/clerk-react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import {
   BarChart3,
@@ -25,6 +24,7 @@ import { useAuth } from './context/AuthContext';
 import { practiceProblems } from './data/practiceProblems';
 import { useDebouncedPreferenceSave } from './hooks/useDebouncedPreferenceSave';
 import { useTheme } from './hooks/useTheme';
+import { SignedInCompat as SignedIn, SignedOutCompat as SignedOut } from './lib/clerkCompat';
 import { getDefaultRouteForUser } from './utils/authStorage';
 import { clearInstitutionSession, getInstitutionSessionToken } from './utils/institutionSession';
 

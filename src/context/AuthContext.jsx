@@ -1,5 +1,9 @@
-import { useAuth as useClerkAuth, useClerk, useUser } from '@clerk/clerk-react';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import {
+  useAuthCompat as useClerkAuth,
+  useClerkCompat as useClerk,
+  useUserCompat as useUser,
+} from '../lib/clerkCompat';
 import { BASE_URL, syncCurrentUserProfileFromClerk } from '../services/apiClient';
 import {
   clearLoggedInUser,

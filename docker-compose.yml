@@ -1,0 +1,44 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: code_mitra_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: codemitra
+      MYSQL_USER: codemitra
+      MYSQL_PASSWORD: codemitra
+      MYSQL_ROOT_PASSWORD: codemitra_root
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  app:
+    image: koushalsharma/code_mitra:latest
+    container_name: code_mitra_app
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      # Zero-config demo defaults are already present in the image.
+      # Only DB wiring is needed here.
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: codemitra
+      DB_USER: codemitra
+      DB_PASSWORD: codemitra
+    ports:
+      - "5000:5000"
+    volumes:
+      - app_uploads:/app/uploads
+
+volumes:
+  mysql_data:
+  app_uploads:
